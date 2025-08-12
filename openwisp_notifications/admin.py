@@ -1,0 +1,3 @@
+from openwisp_notifications.widgets import _add_object_notification_widget
+
+_add_object_notification_widget()
