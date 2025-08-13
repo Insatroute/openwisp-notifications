@@ -1,5 +1,2 @@
 markdown~=3.8.2
 jsonfield>=2.1.0
-
-git+https://github.com/Insatroute/openwisp-users.git@main#egg=openwisp_users
-git+https://github.com/Insatroute/openwisp-utils.git@main#egg=openwisp_utils[rest,celery,channels]
