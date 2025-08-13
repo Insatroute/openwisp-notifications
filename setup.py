@@ -18,7 +18,6 @@ def get_install_requires():
             line.startswith("#")
             or line == ""
             or line.startswith("http")
-            or line.startswith("git")
         ):
             continue
         # add line to requirements
@@ -48,7 +47,7 @@ setup(
     description="Notifications module of OpenWISP",
     long_description=open("README.rst").read(),
     url="http://openwisp.org",
-    download_url="https://github.com/openwisp/openwisp-notifications/releases",
+    #download_url="https://github.com/openwisp/openwisp-notifications/releases",
     platforms=["Platform Independent"],
     keywords=["django", "netjson", "notification", "openwisp", "monitoring"],
     packages=find_packages(exclude=["tests*", "docs*"]),
