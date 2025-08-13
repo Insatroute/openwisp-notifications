@@ -2,4 +2,4 @@ django-cors-headers~=4.4.0
 django-redis~=6.0.0
 freezegun~=1.5.4
 
-git+https://github.com/Insatroute/openwisp-utils.git@main#egg=openwisp_utils[qa,selenium,channels,channels-test]
+#pip install -e git+https://github.com/Insatroute/openwisp-utils.git@main#egg=openwisp_utils[qa,selenium,channels,channels-test]
