@@ -73,9 +73,30 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
+
+OPENWISP_ADMIN_THEME_LINKS = [
+ {
+ "type": "text/css",
+ "href": "/static/admin/css/openwisp.css",
+ "rel": "stylesheet",
+ "media": "all",
+ },
+ {
+ "type": "text/css",
+ "href": "/static/custom.css",
+ "rel": "stylesheet",
+ "media": "all",
+ },
+ {
+ "type": "image/x-icon",
+ "href": "/static/favicon.png",
+ "rel": "icon",
+ },
+]
+
 ROOT_URLCONF = "openwisp2.urls"
 
-TIME_ZONE = "Europe/Rome"
+TIME_ZONE = "Asia/Kolkata"
 LANGUAGE_CODE = "en-gb"
 USE_TZ = True
 USE_I18N = False
@@ -85,6 +106,8 @@ STATIC_ROOT = os.path.join(BASE_DIR, "static")
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 MEDIA_URL = "/media/"
 EMAIL_PORT = "1025"
+STATIC_ROOT = os.path.join(BASE_DIR, 'static')
+STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static_custom')]
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
