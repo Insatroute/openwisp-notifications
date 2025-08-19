@@ -7,6 +7,10 @@
 }
 
 /* Notification bell */
+.ow-noti-bell{
+    mask: url(../images/icons/icon-bell.svg) no-repeat;
+  -webkit-mask: url(../images/icons/icon-bell.svg) no-repeat;
+}
 .ow-notifications {
   position: relative;
   margin-left: 15px;
