@@ -42,6 +42,6 @@ class OpenwispNotificationsConfig(AppConfig):
                 config={
                     "label": _("Notifications"),
                     "url": "/notifications/preferences/",
-                    "icon": "ow-notification-bell",
+                    "icon": "ow-noti-bell",
                 }
             )
