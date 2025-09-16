@@ -31,7 +31,6 @@ else:
     # any changes in the API views.
     urlpatterns += [
         path("", include("openwisp_notifications.urls", namespace="notifications")),
-        path("", include("nexapp_extra_notify.urls", namespace="nexapp_extra_notify"))
     ]
 
 urlpatterns += staticfiles_urlpatterns()
