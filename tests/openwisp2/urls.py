@@ -30,7 +30,8 @@ else:
     # This can be used when you are extending the app but not making
     # any changes in the API views.
     urlpatterns += [
-        path("", include("openwisp_notifications.urls", namespace="notifications"))
+        path("", include("openwisp_notifications.urls", namespace="notifications")),
+        path("", include("nexapp_extra_notify.urls", namespace="nexapp_extra_notify"))
     ]
 
 urlpatterns += staticfiles_urlpatterns()

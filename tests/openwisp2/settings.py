@@ -36,6 +36,8 @@ INSTALLED_APPS = [
     "openwisp_users",
     # notifications module
     "openwisp_notifications",
+    # "nexapp_extra_notify",
+    # "nexapp_extra_notify.apps.NexappExtraNotifyConfig",
     # add openwisp theme
     # (must be loaded here)
     "openwisp_utils.admin_theme",
