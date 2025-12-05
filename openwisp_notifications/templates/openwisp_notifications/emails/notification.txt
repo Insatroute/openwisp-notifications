@@ -1,6 +1,14 @@
 {% load i18n %}
 
-[{{ site_name }}] {{ notifications_count }} {% translate "unread notifications since" %} {{ since }}
+
+{% comment %} {% if notifications|length == 1 %} {% endcomment %}
+{{ notifications.0.email_subject }}
+
+
+{% comment %} {% else %}
+[{{ site_name }}] {{ notifications_count }} {% translate "unread notifications since" %}
+{% endif %} {% endcomment %}
+
 
 {% for notification in notifications %}
 - {{ notification.email_message }}{% if notification.rendered_description %}
