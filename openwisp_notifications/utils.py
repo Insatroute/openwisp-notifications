@@ -69,14 +69,17 @@ def send_notification_email(
     notifications_count=0,
     user=None,
 ):
-
     extra_context = {}
     current_site = Site.objects.get_current()
+
+    # Allow calling this function with a single Notification instance
     if isinstance(notifications, load_model("Notification")):
         user = notifications.recipient
         since = notifications.timestamp
         notifications_count = 1
         notifications = [notifications]
+
+    # Build list of notifications that can actually be sent
     unsent_notifications = []
     for notification in notifications[: app_settings.EMAIL_BATCH_DISPLAY_LIMIT]:
         url = notification.data.get("url", "") if notification.data else None
@@ -86,61 +89,104 @@ def send_notification_email(
             notification.url = notification.redirect_view_url
         else:
             notification.url = None
+
         try:
+            # Accessing this property may raise NotificationRenderException
             notification.email_message
         except NotificationRenderException:
             continue
         else:
             unsent_notifications.append(notification)
+
     if not unsent_notifications:
         return
+
     unsubscribe_url = get_unsubscribe_url_for_user(user)
+
     pluralize_notification = ngettext_lazy(
-        "notification", "notifications", notifications_count
+        "notification",
+        "notifications",
+        notifications_count,
     )
+
     since = timezone.localtime(since).strftime("%B %-d, %Y, %-I:%M %p %Z")
+
     extra_context = {
         "notifications": unsent_notifications,
         "notifications_count": notifications_count,
         "site_name": current_site.name,
         "footer": get_unsubscribe_url_email_footer(unsubscribe_url),
-        "title": _("{notifications_count} unread {pluralize_notification}").format(
+        "subtitle": _("Since {since}").format(since=since),
+        "since": since,
+        "title": _(
+            "{notifications_count} unread {pluralize_notification}"
+        ).format(
             notifications_count=notifications_count,
             pluralize_notification=pluralize_notification,
         ),
-        "subtitle": _("Since {since}").format(since=since),
-        "since": since,
     }
+
     if notifications_count == 1:
+        # Single-notification email: try to include circuit_id_safe if available
+        notification = unsent_notifications[0]
+        target = getattr(notification, "target", None)
+
+        circuit_id = ""
+        if target is not None:
+            # Device model exposes circuit_id_safe as a @property
+            circuit_id = getattr(target, "circuit_id_safe", "") or ""
+
         extra_context.update(
             {
                 "call_to_action_url": notification.url,
                 "call_to_action_text": _("View Details"),
             }
         )
-    elif notifications_count > app_settings.EMAIL_BATCH_DISPLAY_LIMIT:
-        extra_context.update(
-            {
-                "call_to_action_url": f"https://{current_site.domain}/admin/#notifications",
-                "call_to_action_text": _("View all Notifications"),
-            }
-        )
 
-    plain_text_content = render_to_string(
-        "openwisp_notifications/emails/notification.txt", extra_context
-    )
-    notifications_count = min(
-        notifications_count, app_settings.EMAIL_BATCH_DISPLAY_LIMIT
-    )
-    send_email(
-        subject=_(
-            "[{site_name}] {notifications_count} unread {pluralize_notification} since {since}"
+        if circuit_id:
+            subject = _(
+                '[{site_name}] Circuit ID: {circuit_id} – "{target}" {verb}'
+            ).format(
+                site_name=current_site.name,
+                circuit_id=circuit_id,
+                target=notification.target,
+                verb=notification.verb,
+            )
+        else:
+            # Fallback to the notification type's configured subject
+            subject = notification.email_subject
+    else:
+        if notifications_count > app_settings.EMAIL_BATCH_DISPLAY_LIMIT:
+            extra_context.update(
+                {
+                    "call_to_action_url": (
+                        f"https://{current_site.domain}/admin/#notifications"
+                    ),
+                    "call_to_action_text": _("View all Notifications"),
+                }
+            )
+            notifications_count = min(
+                notifications_count,
+                app_settings.EMAIL_BATCH_DISPLAY_LIMIT,
+            )
+
+        subject = _(
+            "[{site_name}] {notifications_count} unread "
+            "{pluralize_notification} since {since}"
         ).format(
             site_name=current_site.name,
             notifications_count=notifications_count,
             since=since,
             pluralize_notification=pluralize_notification,
-        ),
+        )
+
+    plain_text_content = render_to_string(
+        "openwisp_notifications/emails/notification.txt",
+        extra_context,
+    )
+
+    send_email(
+        subject=subject,
         body_text=plain_text_content,
         body_html=True,
         recipients=[user.email],
@@ -154,19 +200,26 @@ def send_notification_email(
 
 
 def get_user_email_preference(notification):
-    """
-    Returns the user's email preference for notifications.
+    """Returns the user's email preference for notifications.
+
     If the user has no preference set, it defaults to True.
     """
-    target_org = getattr(getattr(notification, "target", None), "organization_id", None)
+    target_org = getattr(
+        getattr(notification, "target", None),
+        "organization_id",
+        None,
+    )
+
     if not (notification.type and target_org):
         # We can not check email preference if notification type is absent,
         # or if target_org is not present
         # therefore send email anyway.
         return True
+
     try:
         return notification.recipient.notificationsetting_set.get(
-            organization=target_org, type=notification.type
+            organization=target_org,
+            type=notification.type,
         ).email_notification
     except ObjectDoesNotExist:
         return False
