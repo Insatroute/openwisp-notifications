@@ -58,11 +58,11 @@ class OpenwispNotificationsConfig(AppConfig):
                         "url": "/notifications/preferences/",
                         "icon": "ow-noti-bell",
                     },
-                    2: {
-                        "label": _("Add Email"),
-                        "url": "/admin/nexapp_extra_notify/extranotificationemail/",
-                        "icon": "ow-noti-bell",
-                    },
+                    # 2: {
+                    #     "label": _("Add Email"),
+                    #     "url": "/admin/nexapp_extra_notify/extranotificationemail/",
+                    #     "icon": "ow-noti-bell",
+                    # },
                     
                    
 
