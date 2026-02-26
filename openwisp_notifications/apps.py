@@ -3,7 +3,7 @@ from django.db.models.signals import post_migrate
 from django.utils.translation import gettext_lazy as _
 
 from swapper import get_model_name, load_model
-from openwisp_utils.admin_theme.menu import register_menu_group, register_menu_subitem
+# from openwisp_utils.admin_theme.menu import register_menu_group, register_menu_subitem
 
 from . import settings as app_settings
 
@@ -14,7 +14,6 @@ class OpenwispNotificationsConfig(AppConfig):
     verbose_name = _("Notifications")
 
     def ready(self):
-        self.register_menu_groups()
         from openwisp_notifications.handlers import (
             notification_type_registered_unregistered_handler,
             notify_handler,
@@ -46,28 +45,25 @@ class OpenwispNotificationsConfig(AppConfig):
     #             }
     #         )
 
-    def register_menu_groups(self):
-        register_menu_group(
-            position=500,
-            config={
-                'label': _('Notifications'),
-                'icon': 'ow-noti-bell',
-                'items': {
-                    1: {
-                       "label": _("Notifications"),
-                        "url": "/notifications/preferences/",
-                        "icon": "ow-noti-bell",
-                    },
+    # def register_menu_groups(self):
+    #     register_menu_group(
+    #         position=500,
+    #         config={
+    #             'label': _('Notifications'),
+    #             'icon': 'ow-noti-bell',
+    #             'items': {
+    #                 1: {
+    #                    "label": _("Notifications"),
+    #                     "url": "/notifications/preferences/",
+    #                     "icon": "ow-noti-bell",
+    #                 },
                     # 2: {
                     #     "label": _("Add Email"),
                     #     "url": "/admin/nexapp_extra_notify/extranotificationemail/",
                     #     "icon": "ow-noti-bell",
                     # },
-                    
-                   
-
-                },
-            }
-        )
+        #         },
+        #     }
+        # )
   
     
