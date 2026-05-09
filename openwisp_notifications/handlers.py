@@ -3,6 +3,7 @@ from urllib.parse import quote
 
 from allauth.account.models import EmailAddress
 from celery.exceptions import OperationalError
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.signals import user_logged_in
@@ -44,6 +45,196 @@ OrganizationUser = swapper_load_model("openwisp_users", "OrganizationUser")
 Organization = swapper_load_model("openwisp_users", "Organization")
 
 
+def _get_alert_config(notification):
+    """Get AlertConfiguration for this notification. Returns object or None."""
+    try:
+        target = None
+        if notification.target_content_type and notification.target_object_id:
+            target = notification.target_content_type.get_object_for_this_type(
+                pk=notification.target_object_id
+            )
+        if target is None:
+            return None
+        org_id = getattr(target, "organization_id", None)
+        if not org_id or not notification.type:
+            return None
+        from email_templates.models import AlertConfiguration
+        return AlertConfiguration.objects.filter(
+            organization_id=org_id,
+            notification_type=notification.type,
+            is_enabled=True,
+        ).select_related('email_template').first()
+    except Exception:
+        return None
+
+
+def _get_alert_email_timing(notification):
+    ac = _get_alert_config(notification)
+    return ac.email_timing if ac else None
+
+
+def _send_custom_template_email(notification, alert_config):
+    """Send email using custom EmailTemplate from AlertConfiguration."""
+    template = alert_config.email_template
+    if not template or not template.is_active:
+        return False
+
+    target = None
+    try:
+        if notification.target_content_type and notification.target_object_id:
+            target = notification.target_content_type.get_object_for_this_type(
+                pk=notification.target_object_id
+            )
+    except Exception:
+        pass
+
+    from django.contrib.sites.models import Site
+    site = Site.objects.get_current()
+    device_name = str(target) if target else "Unknown"
+    notif_data = notification.data or {}
+
+    org_name = ""
+    if target:
+        org = getattr(target, "organization", None)
+        org_name = str(org) if org else ""
+
+    device_url = f"https://{site.domain}/admin/"
+    if target:
+        try:
+            ct = notification.target_content_type
+            device_url = "https://{domain}{path}".format(
+                domain=site.domain,
+                path=reverse('admin:%s_%s_change' % (ct.app_label, ct.model), args=[target.pk])
+            )
+        except Exception:
+            pass
+
+    alert_type_map = dict(alert_config.NOTIFICATION_TYPE_CHOICES)
+    alert_type = alert_type_map.get(notification.type, notification.type or '')
+
+    ts = ""
+    if notification.timestamp:
+        ts = timezone.localtime(notification.timestamp).strftime("%B %d, %Y, %I:%M %p %Z")
+
+    variables = {
+        '{{ device_name }}': device_name,
+        '{{ organization }}': org_name,
+        '{{ site_name }}': site.name,
+        '{{ site_domain }}': site.domain,
+        '{{ notification_type }}': notification.type or '',
+        '{{ alert_type }}': alert_type,
+        '{{ level }}': notification.level or '',
+        '{{ message }}': str(notification.message or ''),
+        '{{ timestamp }}': ts,
+        '{{ device_url }}': device_url,
+        '{{ check_interval }}': str(alert_config.check_interval),
+        '{{ retry_count }}': str(alert_config.retry_count),
+        '{{ alert_after }}': str(alert_config.alert_after_minutes),
+        '{{ interface_name }}': notif_data.get('ifname', ''),
+    }
+
+    sla_metrics = notif_data.get('sla_metrics', [])
+    if sla_metrics:
+        variables['{{ sla_table }}'] = _build_sla_table_html(
+            sla_metrics, notif_data.get('notification_type', '')
+        )
+    else:
+        variables['{{ sla_table }}'] = ''
+
+    subject = template.subject
+    body = template.body
+    for var, val in variables.items():
+        subject = subject.replace(var, val)
+        body = body.replace(var, val)
+
+    # For interface notifications, append interface name to subject
+    ifname = notif_data.get('ifname', '')
+    if ifname and notification.type in ('interface_is_down', 'interface_is_up', 'wan_internet_down', 'wan_internet_up'):
+        subject = subject + ' — ' + ifname
+
+    try:
+        from django.core.mail import EmailMultiAlternatives
+        from django.utils.html import strip_tags
+
+        mail = EmailMultiAlternatives(
+            subject=subject,
+            body=strip_tags(body),
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=[notification.recipient.email],
+        )
+        mail.attach_alternative(body, "text/html")
+        mail.send()
+
+        notification.emailed = True
+        notification._meta.model.objects.bulk_update([notification], fields=["emailed"])
+        return True
+    except Exception as e:
+        logger.warning("Custom template email failed: %s", e)
+        return False
+
+
+def _build_sla_table_html(sla_metrics, notification_type):
+    """Build styled HTML table for SLA metrics in email."""
+    rows = ""
+    for m in sla_metrics:
+        status = m.get('status', 'fail')
+        if status == 'pass':
+            val_style = "color:#16A34A; font-weight:700"
+            pill_bg, pill_color, pill_text = "#DCFCE7", "#16A34A", "PASS"
+        else:
+            val_style = "color:#DC2626; font-weight:700"
+            pill_bg, pill_color, pill_text = "#FEE2E2", "#DC2626", "FAIL"
+        rows += (
+            '<tr>'
+            '<td style="padding:10px 14px; border-bottom:1px solid #F1F5F9; font-weight:600; color:#1E293B">%s</td>'
+            '<td style="padding:10px 14px; border-bottom:1px solid #F1F5F9; %s">%s</td>'
+            '<td style="padding:10px 14px; border-bottom:1px solid #F1F5F9; color:#64748B">%s</td>'
+            '<td style="padding:10px 14px; border-bottom:1px solid #F1F5F9; text-align:center">'
+            '<span style="display:inline-block; padding:3px 10px; border-radius:999px; font-size:11px; font-weight:700; background:%s; color:%s">%s</span>'
+            '</td>'
+            '</tr>'
+        ) % (m.get("label", ""), val_style, m.get("actual", "N/A"), m.get("target", ""), pill_bg, pill_color, pill_text)
+
+    return (
+        '<div style="margin:16px 0">'
+        '<table style="width:100%%; border-collapse:collapse; border:1px solid #E5E7EB; border-radius:8px; font-size:13px">'
+        '<thead><tr>'
+        '<th style="background:#F1F5F9; color:#475569; font-weight:600; text-align:left; padding:10px 14px; border-bottom:2px solid #E2E8F0; font-size:11px; text-transform:uppercase; letter-spacing:0.5px">Metric</th>'
+        '<th style="background:#F1F5F9; color:#475569; font-weight:600; text-align:left; padding:10px 14px; border-bottom:2px solid #E2E8F0; font-size:11px; text-transform:uppercase; letter-spacing:0.5px">Actual</th>'
+        '<th style="background:#F1F5F9; color:#475569; font-weight:600; text-align:left; padding:10px 14px; border-bottom:2px solid #E2E8F0; font-size:11px; text-transform:uppercase; letter-spacing:0.5px">Target</th>'
+        '<th style="background:#F1F5F9; color:#475569; font-weight:600; text-align:center; padding:10px 14px; border-bottom:2px solid #E2E8F0; font-size:11px; text-transform:uppercase; letter-spacing:0.5px">Status</th>'
+        '</tr></thead>'
+        '<tbody>%s</tbody>'
+        '</table>'
+        '</div>'
+    ) % rows
+
+
+def _get_device_group_users(target):
+    """Check if target device has a group with assigned users.
+    Returns a User queryset if group users exist, None otherwise.
+    """
+    if target is None:
+        return None
+    try:
+        # target must be a Device with a group FK
+        group_id = getattr(target, 'group_id', None)
+        if not group_id:
+            return None
+        from swapper import load_model
+        DeviceGroupUser = load_model('config', 'DeviceGroupUser')
+        user_ids = list(
+            DeviceGroupUser.objects.filter(
+                device_group_id=group_id
+            ).values_list('user_id', flat=True)
+        )
+        if not user_ids:
+            return None  # group exists but no users assigned — fall back to org
+        return User.objects.filter(pk__in=user_ids)
+    except Exception:
+        return None
+
+
 def notify_handler(**kwargs):
     """
     Handler function to create Notification instance upon action signal call.
@@ -73,14 +264,14 @@ def notify_handler(**kwargs):
     not_where = Q()
     where_group = Q()
     if target_org:
-        org_admin_query = Q(
+        # All organization users (not just admins) + superusers
+        org_user_query = Q(
             **{
                 f"{user_app_name}_organizationuser__organization": target_org,
-                f"{user_app_name}_organizationuser__is_admin": True,
             }
         )
-        where = where | (Q(is_staff=True) & org_admin_query)
-        where_group = org_admin_query
+        where = where | org_user_query
+        where_group = org_user_query
 
         # We can only find notification setting if notification type and
         # target organization is present.
@@ -116,6 +307,59 @@ def notify_handler(**kwargs):
             | Q(ignoreobjectnotification__valid_till__gt=timezone.now())
         )
 
+    # If an AlertConfiguration exists for this org+type, the admin's
+    # recipient picker overrides the default per-user-preference logic.
+    # 'all_org_users' = every active org member (force-deliver, ignoring
+    # personal NotificationSetting). 'selected' = only the picked users.
+    # Per-user channel flags decide whether each user gets a Web Notification
+    # row at all — users with web=False are excluded from the override list
+    # so no Notification is created for them on the web side. Email firing
+    # is governed by the synced NotificationSetting.email column, which the
+    # save handler in alert_config_api keeps in lockstep with the channel
+    # flags here.
+    ac_override_recipients = None
+    if target_org and notification_type:
+        try:
+            from email_templates.models import AlertConfiguration
+            _ac = (
+                AlertConfiguration.objects
+                .filter(organization_id=target_org, notification_type=notification_type)
+                .prefetch_related("selected_recipients")
+                .first()
+            )
+        except Exception:
+            _ac = None
+        if _ac is not None and _ac.is_enabled:
+            try:
+                channels = _ac.selected_recipient_channels or {}
+                if _ac.recipient_mode == "selected":
+                    candidate_users = list(
+                        _ac.selected_recipients.filter(is_active=True)
+                    )
+                    ac_override_recipients = [
+                        u for u in candidate_users
+                        if channels.get(str(u.pk), {"web": True}).get("web", True)
+                    ]
+                elif _ac.recipient_mode == "all_org_users":
+                    if _ac.all_org_users_web:
+                        org_user_ids = User.objects.filter(
+                            **{
+                                f"{user_app_name}_organizationuser__organization_id": target_org,
+                            },
+                            is_active=True,
+                        ).values_list("pk", flat=True)
+                        ac_override_recipients = list(
+                            User.objects.filter(pk__in=list(org_user_ids))
+                        )
+                    else:
+                        # All-org with web disabled — no web Notification
+                        # created. Email-only is governed by the synced
+                        # NotificationSetting.email rows the save handler
+                        # writes (see alert_config_api).
+                        ac_override_recipients = []
+            except Exception as exc:
+                logger.warning("AlertConfiguration recipient override failed: %s", exc)
+
     if recipient:
         # Check if recipient is User, Group or QuerySet
         if isinstance(recipient, Group):
@@ -126,16 +370,35 @@ def notify_handler(**kwargs):
             recipients = recipient
         else:
             recipients = [recipient]
+    elif ac_override_recipients is not None:
+        recipients = ac_override_recipients
     else:
-        recipients = (
-            User.objects.prefetch_related(
-                "notificationsetting_set", "ignoreobjectnotification_set"
+        # Recipients = org admins + superusers (default) + device group users (if any).
+        # Device group users are ADDITIONAL — they get notified only for devices
+        # in their assigned group, on top of the default org-level recipients.
+        group_users = _get_device_group_users(target)
+        if group_users is not None:
+            group_user_ids = set(group_users.values_list('pk', flat=True))
+            recipients = (
+                User.objects.prefetch_related(
+                    "notificationsetting_set", "ignoreobjectnotification_set"
+                )
+                .order_by("date_joined")
+                .filter(where | Q(pk__in=group_user_ids))
+                .filter(Q(is_active=True))
+                .exclude(not_where)
+                .distinct()
             )
-            .order_by("date_joined")
-            .filter(where)
-            .exclude(not_where)
-            .distinct()
-        )
+        else:
+            recipients = (
+                User.objects.prefetch_related(
+                    "notificationsetting_set", "ignoreobjectnotification_set"
+                )
+                .order_by("date_joined")
+                .filter(where)
+                .exclude(not_where)
+                .distinct()
+            )
     optional_objs = [
         (kwargs.pop(opt, None), opt) for opt in ("target", "action_object")
     ]
@@ -181,6 +444,30 @@ def send_email_notification(sender, instance, created, **kwargs):
     ).exists()
     if not email_verified or not get_user_email_preference(instance):
         return
+
+    # Check AlertConfiguration for email timing and custom template
+    alert_config = _get_alert_config(instance)
+    alert_email_timing = alert_config.email_timing if alert_config else None
+    if alert_email_timing == "disabled":
+        return  # AlertConfig says no email for this type
+    # The "immediate" timing was renamed to "keep_default" in the model
+    # — both names need to trigger the same path (immediate send + use
+    # custom EmailTemplate when AlertConfiguration has one). Without
+    # accepting "keep_default" here, configs that picked an email
+    # template were silently falling through to the batched/default
+    # path and the user got the system default email instead of the
+    # template they selected.
+    if alert_email_timing in ("keep_default", "immediate", "after_retries", "after_tolerance"):
+        # Try custom EmailTemplate first, fall back to default
+        if alert_config and alert_config.email_template:
+            _send_custom_template_email(instance, alert_config)
+        else:
+            instance.send_email()
+        Notification.set_last_email_sent_time_for_user(
+            instance.recipient, instance.timestamp
+        )
+        return  # bypass batch, send now
+
     if not app_settings.EMAIL_BATCH_INTERVAL:
         instance.send_email()
         return

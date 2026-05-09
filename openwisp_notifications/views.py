@@ -83,6 +83,21 @@ class NotificationPreferenceView(LoginRequiredMixin, UserPassesTestMixin, Templa
             user = self.request.user
 
         context["user_id"] = user.id
+        # Org members who are not OrganizationUser.is_admin in any org get
+        # a read-only Notification Preferences page — the admin's
+        # AlertConfiguration recipient picker is mandatory for them.
+        viewer = self.request.user
+        is_readonly = False
+        if viewer == user and not viewer.is_superuser:
+            try:
+                from openwisp_users.models import OrganizationUser
+                is_admin_anywhere = OrganizationUser.objects.filter(
+                    user=viewer, is_admin=True,
+                ).exists()
+                is_readonly = not is_admin_anywhere
+            except Exception:
+                is_readonly = False
+        context["preferences_readonly"] = is_readonly
         return context
 
     def test_func(self):

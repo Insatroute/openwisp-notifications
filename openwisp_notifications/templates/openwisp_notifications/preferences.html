@@ -10,6 +10,60 @@
 {% block extrastyle %}
   {{ block.super }}
   <link rel="stylesheet" type="text/css" href="{% static 'openwisp-notifications/css/preferences.css' %}" />
+  <style>
+    /* Hide the bulk-toggle controls — they bypass the per-AlertConfig
+       flow this page is wired to. Keep the "Web" / "Email" column
+       labels visible as plain headers; only the toggle switches are
+       hidden. Users manage each notification type individually through
+       the per-type Web/Email toggles below. */
+    .settings-container .global-settings { display: none !important; }
+    .settings-container tr.org-header label.switch,
+    .settings-container tr.org-header .tooltip-icon { display: none !important; }
+  </style>
+  <script>
+    /* Replace the per-org count badges ("Web 0/42", "Email 0/42") with
+       plain "Web" / "Email" labels — counts are misleading once we hide
+       the bulk toggles, since users can no longer flip everything at once. */
+    document.addEventListener('DOMContentLoaded', function(){
+      var obs = new MutationObserver(function(){
+        document.querySelectorAll('thead.toggle-header h2.web-count').forEach(function(el){
+          if (el.textContent.trim() !== 'Web') el.textContent = 'Web';
+        });
+        document.querySelectorAll('thead.toggle-header h2.email-count').forEach(function(el){
+          if (el.textContent.trim() !== 'Email') el.textContent = 'Email';
+        });
+      });
+      obs.observe(document.body, {childList: true, subtree: true});
+    });
+  </script>
+  {% if preferences_readonly %}
+  <style>
+    .settings-container[data-readonly="true"] input[type="checkbox"],
+    .settings-container[data-readonly="true"] button.global-setting-dropdown-toggle,
+    .settings-container[data-readonly="true"] .global-setting-dropdown-menu button {
+      pointer-events: none !important;
+      cursor: not-allowed !important;
+      opacity: 0.6;
+    }
+    .settings-container[data-readonly="true"] label.switch {
+      pointer-events: none !important;
+      cursor: not-allowed !important;
+      opacity: 0.6;
+    }
+    .settings-container[data-readonly="true"]::before {
+      content: "Read-only — your organization admin manages these alert preferences.";
+      display: block;
+      margin-bottom: 14px;
+      padding: 10px 14px;
+      background: #fef9c3;
+      color: #854d0e;
+      border: 1px solid #fde68a;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+  </style>
+  {% endif %}
 {% endblock extrastyle %}
 
 {% block breadcrumbs %}
@@ -25,7 +79,7 @@
 {% endblock breadcrumbs %}
 
 {% block content %}
-  <div class="settings-container" data-user-id="{{ user_id }}">
+  <div class="settings-container" data-user-id="{{ user_id }}"{% if preferences_readonly %} data-readonly="true"{% endif %}>
     <div class="loader"></div>
     <div class="global-settings">
       <h2>{% trans 'Global Settings' %}</h2>
@@ -88,6 +142,36 @@
     </div>
   </div>
 
+  <!-- Custom modal shown when an admin/superuser toggles a Web setting OFF.
+       Two actions: remove only the current user, or open the Alert
+       Configuration to edit which other users are recipients. -->
+  <div id="ac-toggle-off-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:#fff;border-radius:14px;max-width:460px;width:92%;box-shadow:0 18px 48px rgba(0,0,0,0.18);">
+      <div style="padding:20px 24px 8px;border-bottom:1px solid #f1f5f9;">
+        <h3 style="margin:0;font-size:16px;color:#0f172a;">Turn off this alert</h3>
+      </div>
+      <div style="padding:18px 24px;color:#334155;font-size:13.5px;line-height:1.55;">
+        How do you want to handle this alert?
+      </div>
+      <div style="padding:0 24px 22px;display:flex;flex-direction:column;gap:10px;">
+        <button type="button" id="ac-toggle-remove-me"
+          style="padding:11px 14px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:10px;font-size:13.5px;font-weight:600;color:#0f172a;cursor:pointer;text-align:left;">
+          Remove me only
+          <div style="font-weight:400;color:#64748b;font-size:12px;margin-top:2px;">Other recipients keep getting this alert.</div>
+        </button>
+        <button type="button" id="ac-toggle-remove-other"
+          style="padding:11px 14px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:10px;font-size:13.5px;font-weight:600;color:#0f172a;cursor:pointer;text-align:left;">
+          Remove other users
+          <div style="font-weight:400;color:#64748b;font-size:12px;margin-top:2px;">Open the Alert Configuration to change which users receive this alert.</div>
+        </button>
+      </div>
+      <div style="padding:12px 24px 22px;display:flex;justify-content:flex-end;border-top:1px solid #f1f5f9;">
+        <button type="button" id="ac-toggle-cancel"
+          style="padding:9px 18px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;font-size:13px;font-weight:600;color:#475569;cursor:pointer;">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Confirmation Modal -->
   <div id="confirmation-modal" class="modal">
     <div class="modal-content">
@@ -112,5 +196,229 @@
   {{ block.super }}
   {% if request.user.is_authenticated %}
     <script type="text/javascript" src="{% static 'openwisp-notifications/js/preferences.js' %}"></script>
+    {% if not preferences_readonly %}
+    <script>
+    (function(){
+      var CSRF = document.cookie.split('; ').reduce(function(a,c){
+        var p = c.indexOf('csrftoken=');
+        return p === 0 ? c.slice(10) : a;
+      }, '');
+
+      // The preferences page already exposes the user id on the
+      // settings-container (preferences.js reads it the same way).
+      var USER_ID = (function(){
+        var el = document.querySelector('.settings-container[data-user-id]');
+        return el ? el.getAttribute('data-user-id') : '';
+      })();
+      var BASE = '/api/v1/notifications/user/' + USER_ID + '/user-setting';
+
+      // Pre-populate pk → notification_type cache with ONE list request
+      // at page load, so toggle clicks don't depend on a per-pk lookup
+      // (which can race with the click and feels broken to the user).
+      var TYPE_CACHE = {};
+      function refreshTypeCache(){
+        if (!USER_ID) return Promise.resolve();
+        return fetch(BASE + '/?page_size=500', {credentials:'same-origin'})
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            var items = (d && (d.results || d)) || [];
+            if (!Array.isArray(items)) items = [];
+            items.forEach(function(it){
+              if (it && it.id && it.type) TYPE_CACHE[String(it.id)] = it.type;
+            });
+          })
+          .catch(function(e){
+            console.error('preferences-toggle: type-cache prefetch failed', e);
+          });
+      }
+      var TYPE_READY = refreshTypeCache();
+
+      function fetchType(pk){
+        var key = String(pk);
+        if (TYPE_CACHE[key]) return Promise.resolve(TYPE_CACHE[key]);
+        // Cache miss after prefetch (e.g. setting created post-load) —
+        // wait for prefetch to settle then refetch this single pk.
+        return TYPE_READY.then(function(){
+          if (TYPE_CACHE[key]) return TYPE_CACHE[key];
+          if (!USER_ID) return '';
+          return fetch(BASE + '/' + key + '/', {credentials:'same-origin'})
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+              TYPE_CACHE[key] = (d && d.type) || '';
+              return TYPE_CACHE[key];
+            })
+            .catch(function(e){
+              console.error('preferences-toggle: per-pk fetch failed for', key, e);
+              return '';
+            });
+        });
+      }
+
+      // Listen on change in capture phase. When change fires, t.checked
+      // is the NEW state (after the click flipped it). We stop the event
+      // before preferences.js's bubble-phase change handler runs so its
+      // PATCH never goes out — the AlertConfiguration mutation we make
+      // is the source of truth for these settings.
+      document.addEventListener('change', function(ev){
+        var t = ev.target;
+        if (!(t && t.tagName === 'INPUT' && t.type === 'checkbox')) return;
+        var isWeb = t.classList.contains('web-checkbox');
+        var isEmail = t.classList.contains('email-checkbox');
+        if (!isWeb && !isEmail) return;
+        var orgId = t.getAttribute('data-organization-id') || '';
+        var pk = t.getAttribute('data-pk') || '';
+        if (!orgId || !pk) return;
+
+        // Stop preferences.js from also handling this change event.
+        ev.stopPropagation();
+        ev.stopImmediatePropagation();
+
+        var becoming = t.checked; // post-click state — the user's intent
+        function revert(){ t.checked = !becoming; }
+
+        fetchType(pk).then(function(ntype){
+          if (!ntype) {
+            console.error('preferences-toggle: could not resolve type for pk', pk, '— reverting');
+            alert('Could not load this notification type. Reload the page and try again.');
+            revert();
+            return;
+          }
+          if (becoming === true) {
+            // ON → always open the AlertConfiguration modal so the admin
+            // can confirm/edit. Pass which channel was toggled so the
+            // modal can pre-check the current user with matching flags:
+            //   web    → {web: true,  email: false}
+            //   email  → {web: true,  email: true} (email implies web)
+            var ret = encodeURIComponent(window.location.pathname + window.location.search);
+            var channel = isWeb ? 'web' : 'email';
+            window.location.href = '/admin/email-alerts/?customize=' +
+              encodeURIComponent(orgId) + ':' + encodeURIComponent(ntype) +
+              '&return_to=' + ret + '&pre_select_self=' + channel;
+            return;
+          }
+          // OFF flow.
+          if (isWeb) {
+            // Show the two-action modal: "Remove me only" or
+            // "Remove other users" (which opens the alert-config modal
+            // so the admin can edit the recipient list directly).
+            openToggleOffModal({
+              orgId: orgId,
+              ntype: ntype,
+              onRemoveMe: function(){
+                fetch('/admin/email-alerts/api/preference-toggle/', {
+                  method: 'POST',
+                  credentials: 'same-origin',
+                  headers: {'Content-Type':'application/json','X-CSRFToken': CSRF},
+                  body: JSON.stringify({action:'remove_self', organization: orgId, notification_type: ntype}),
+                }).then(function(r){ return r.json(); }).then(function(d){
+                  if (d.error) { alert(d.error); revert(); return; }
+                  location.reload();
+                }).catch(function(e){ alert('Failed: ' + e.message); revert(); });
+              },
+              onRemoveOther: function(){
+                var ret = encodeURIComponent(window.location.pathname + window.location.search);
+                window.location.href = '/admin/email-alerts/?customize=' +
+                  encodeURIComponent(orgId) + ':' + encodeURIComponent(ntype) +
+                  '&return_to=' + ret;
+              },
+              onCancel: function(){ revert(); },
+            });
+          } else { // email OFF — same two-action modal as web-off,
+            // but BOTH actions are silent API calls (no modal redirect).
+            openToggleOffModal({
+              orgId: orgId,
+              ntype: ntype,
+              title: 'Turn off email',
+              meBtnLabel: 'Email off for me only',
+              meBtnHelp: 'Other recipients keep getting the email.',
+              otherBtnLabel: 'Email off for all selected users',
+              otherBtnHelp: 'Every recipient stops getting the email. Web stays on.',
+              onRemoveMe: function(){
+                fetch('/admin/email-alerts/api/preference-toggle/', {
+                  method: 'POST',
+                  credentials: 'same-origin',
+                  headers: {'Content-Type':'application/json','X-CSRFToken': CSRF},
+                  body: JSON.stringify({action:'email_off', organization: orgId, notification_type: ntype}),
+                }).then(function(r){ return r.json(); }).then(function(d){
+                  if (d.error) { alert(d.error); revert(); return; }
+                  // checkbox already reflects the new (off) state
+                }).catch(function(e){ alert('Failed: ' + e.message); revert(); });
+              },
+              onRemoveOther: function(){
+                fetch('/admin/email-alerts/api/preference-toggle/', {
+                  method: 'POST',
+                  credentials: 'same-origin',
+                  headers: {'Content-Type':'application/json','X-CSRFToken': CSRF},
+                  body: JSON.stringify({action:'email_off_all', organization: orgId, notification_type: ntype}),
+                }).then(function(r){ return r.json(); }).then(function(d){
+                  if (d.error) { alert(d.error); revert(); return; }
+                  // checkbox already reflects the new (off) state
+                }).catch(function(e){ alert('Failed: ' + e.message); revert(); });
+              },
+              onCancel: function(){ revert(); },
+            });
+          }
+        });
+      }, true);
+
+      // ---- toggle-off modal helpers ----
+      var _modalEl = document.getElementById('ac-toggle-off-modal');
+      var _btnRemoveMe = document.getElementById('ac-toggle-remove-me');
+      var _btnRemoveOther = document.getElementById('ac-toggle-remove-other');
+      var _btnCancel = document.getElementById('ac-toggle-cancel');
+      var _activeCallbacks = null;
+      function _setBtnLabel(btn, mainLabel, helpLabel){
+        if (!btn) return;
+        // Button content: <main label>\n<small help>
+        var html = mainLabel +
+          '<div style="font-weight:400;color:#64748b;font-size:12px;margin-top:2px;">' +
+            (helpLabel || '') +
+          '</div>';
+        btn.innerHTML = html;
+      }
+      function openToggleOffModal(cfg){
+        _activeCallbacks = cfg;
+        var titleEl = _modalEl.querySelector('h3');
+        if (titleEl) titleEl.textContent = cfg.title || 'Turn off this alert';
+        _setBtnLabel(_btnRemoveMe,
+          cfg.meBtnLabel || 'Remove me only',
+          cfg.meBtnHelp || 'Other recipients keep getting this alert.');
+        _setBtnLabel(_btnRemoveOther,
+          cfg.otherBtnLabel || 'Remove other users',
+          cfg.otherBtnHelp || 'Open the Alert Configuration to change which users receive this alert.');
+        _modalEl.style.display = 'flex';
+      }
+      function closeToggleOffModal(){
+        _modalEl.style.display = 'none';
+      }
+      _btnRemoveMe.addEventListener('click', function(){
+        var cb = _activeCallbacks;
+        closeToggleOffModal();
+        if (cb && cb.onRemoveMe) cb.onRemoveMe();
+        _activeCallbacks = null;
+      });
+      _btnRemoveOther.addEventListener('click', function(){
+        var cb = _activeCallbacks;
+        closeToggleOffModal();
+        if (cb && cb.onRemoveOther) cb.onRemoveOther();
+        _activeCallbacks = null;
+      });
+      _btnCancel.addEventListener('click', function(){
+        var cb = _activeCallbacks;
+        closeToggleOffModal();
+        if (cb && cb.onCancel) cb.onCancel();
+        _activeCallbacks = null;
+      });
+      _modalEl.addEventListener('click', function(ev){
+        if (ev.target === _modalEl) {
+          var cb = _activeCallbacks;
+          closeToggleOffModal();
+          if (cb && cb.onCancel) cb.onCancel();
+          _activeCallbacks = null;
+        }
+      });
+    })();
+    </script>
+    {% endif %}
   {% endif %}
 {% endblock footer %}
