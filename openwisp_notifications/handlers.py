@@ -280,10 +280,7 @@ def _send_custom_template_email(notification, alert_config):
                     if _problem_duration_str else phrase
                 )
         elif ntype == 'ping_problem':
-            _status_text = (
-                f"{device_name} facing {alert_type} for {_since_str}"
-                if _since_str else f"{device_name} facing {alert_type}"
-            )
+            _status_text = f"{device_name} facing {alert_type}"
         elif ntype == 'ping_recovery':
             _status_text = (
                 f"{device_name} {alert_type} after {_problem_duration_str} in problem state"
