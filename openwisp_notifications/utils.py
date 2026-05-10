@@ -127,6 +127,7 @@ def send_notification_email(
     }
 
     if notifications_count == 1:
+<<<<<<< Updated upstream
         # Single-notification email: try to include circuit_id_safe if available
         notification = unsent_notifications[0]
         target = getattr(notification, "target", None)
@@ -136,10 +137,24 @@ def send_notification_email(
             # Device model exposes circuit_id_safe as a @property
             circuit_id = getattr(target, "circuit_id_safe", "") or ""
 
+=======
+        # Link to device dashboard if target is a device
+        dashboard_url = notification.url
+        try:
+            if notification.target:
+                ct = notification.target_content_type
+                from django.urls import reverse
+                dashboard_url = "https://{domain}{path}".format(
+                    domain=current_site.domain,
+                    path=reverse('admin:%s_%s_change' % (ct.app_label, ct.model), args=[notification.target.pk]),
+                )
+        except Exception:
+            pass
+>>>>>>> Stashed changes
         extra_context.update(
             {
-                "call_to_action_url": notification.url,
-                "call_to_action_text": _("View Details"),
+                "call_to_action_url": dashboard_url,
+                "call_to_action_text": _("View Dashboard"),
             }
         )
 

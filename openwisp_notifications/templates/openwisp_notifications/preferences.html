@@ -1,6 +1,9 @@
 {% extends "admin/base_site.html" %}
 
 {% load i18n %}
+{# csrf_token-cookie-trigger: forces Django CsrfViewMiddleware to set the csrftoken cookie so the page's JS can read it for AJAX POST headers (X-CSRFToken). Without this, the cookie isn't sent on first GET and the toggle handlers fail with 403 HTML. #}
+<form style="display:none">{% csrf_token %}</form>
+
 {% load static %}
 
 {% block title %}
@@ -298,12 +301,14 @@
           }
           // OFF flow.
           if (isWeb) {
-            // Show the two-action modal: "Remove me only" or
-            // "Remove other users" (which opens the alert-config modal
-            // so the admin can edit the recipient list directly).
+            // Two-action modal: "Remove me only" or "Remove other users".
+            // Both actions are silent API calls — no redirect to the
+            // alert-config modal.
             openToggleOffModal({
               orgId: orgId,
               ntype: ntype,
+              otherBtnLabel: 'Remove all selected users',
+              otherBtnHelp: 'Stops every selected user from receiving this alert (web + email).',
               onRemoveMe: function(){
                 fetch('/admin/email-alerts/api/preference-toggle/', {
                   method: 'POST',
@@ -316,10 +321,15 @@
                 }).catch(function(e){ alert('Failed: ' + e.message); revert(); });
               },
               onRemoveOther: function(){
-                var ret = encodeURIComponent(window.location.pathname + window.location.search);
-                window.location.href = '/admin/email-alerts/?customize=' +
-                  encodeURIComponent(orgId) + ':' + encodeURIComponent(ntype) +
-                  '&return_to=' + ret;
+                fetch('/admin/email-alerts/api/preference-toggle/', {
+                  method: 'POST',
+                  credentials: 'same-origin',
+                  headers: {'Content-Type':'application/json','X-CSRFToken': CSRF},
+                  body: JSON.stringify({action:'web_off_all', organization: orgId, notification_type: ntype}),
+                }).then(function(r){ return r.json(); }).then(function(d){
+                  if (d.error) { alert(d.error); revert(); return; }
+                  location.reload();
+                }).catch(function(e){ alert('Failed: ' + e.message); revert(); });
               },
               onCancel: function(){ revert(); },
             });

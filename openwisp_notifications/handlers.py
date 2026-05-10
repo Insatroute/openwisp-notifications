@@ -91,7 +91,14 @@ def _send_custom_template_email(notification, alert_config):
     from django.contrib.sites.models import Site
     site = Site.objects.get_current()
     device_name = str(target) if target else "Unknown"
-    notif_data = notification.data or {}
+    # Some senders pass extras under a nested "data" kwarg (notify_handler keeps
+    # that wrapping); others pass them as flat kwargs. Merge both shapes so the
+    # downstream lookups (current_value, ifname, ...) work either way.
+    _raw = notification.data or {}
+    if isinstance(_raw.get('data'), dict):
+        notif_data = {**_raw.get('data', {}), **{k: v for k, v in _raw.items() if k != 'data'}}
+    else:
+        notif_data = _raw
 
     org_name = ""
     if target:
@@ -116,6 +123,182 @@ def _send_custom_template_email(notification, alert_config):
     if notification.timestamp:
         ts = timezone.localtime(notification.timestamp).strftime("%B %d, %Y, %I:%M %p %Z")
 
+    # threshold-vars-added: pull threshold (from AC.custom_threshold or
+    # default 90 if unset), current observed value (from data dict, set by
+    # the notifier), and computed problem-duration for recovery alerts.
+    _threshold = alert_config.custom_threshold
+    _threshold_str = (
+        f"{_threshold:g}%" if _threshold is not None else ""
+    )
+    _current = notif_data.get('current_value')
+    if _current is None:
+        _current_str = ""
+    else:
+        try:
+            _current_str = f"{float(_current):.2f}%"
+        except (TypeError, ValueError):
+            _current_str = str(_current)
+
+    # For *_recovery, compute time spent in problem state by looking up
+    # the matching *_problem notification that preceded this one.
+    _problem_duration_str = ""
+    if (notification.type or '').endswith('_recovery'):
+        try:
+            from openwisp_notifications.models import Notification as _N
+            problem_type = (notification.type or '').replace('_recovery', '_problem')
+            target_pk = str(target.pk) if target else None
+            if target_pk:
+                last_problem = (
+                    _N.objects.filter(
+                        target_object_id=target_pk,
+                        type=problem_type,
+                        timestamp__lt=notification.timestamp,
+                    ).order_by("-timestamp").first()
+                )
+                if last_problem:
+                    delta = notification.timestamp - last_problem.timestamp
+                    total = int(delta.total_seconds())
+                    h, rem = divmod(total, 3600)
+                    m, s = divmod(rem, 60)
+                    if h:
+                        _problem_duration_str = f"{h}h {m}m"
+                    elif m:
+                        _problem_duration_str = f"{m}m {s}s"
+                    else:
+                        _problem_duration_str = f"{s}s"
+        except Exception:
+            pass
+
+    # Per-type rendering: ping (and other binary/non-threshold alerts) don't
+    # have a numeric threshold or observed value. Hide those rows and render a
+    # status line that includes the duration since the issue began.
+    ntype = notification.type or ''
+    is_threshold_metric = bool(_threshold_str) and ntype in (
+        'cpu_problem', 'cpu_recovery',
+        'memory_problem', 'memory_recovery',
+        'disk_problem', 'disk_recovery',
+        'wifi_clients_max_problem', 'wifi_clients_max_recovery',
+        'wifi_clients_min_problem', 'wifi_clients_min_recovery',
+    )
+
+    is_problem = ntype.endswith('_problem') or ntype in (
+        'connection_is_not_working', 'interface_is_down', 'wan_internet_down',
+        'tunnel_down', 'config_error', 'sla_violation', 'ha_split_brain',
+    )
+
+    # For binary problem alerts, compute "since X" using the last opposite-state
+    # notification (mirror of how problem_duration is computed for recoveries).
+    _since_str = ''
+    if is_problem and not is_threshold_metric:
+        try:
+            from openwisp_notifications.models import Notification as _N
+            recovery_pairs = {
+                'ping_problem': 'ping_recovery',
+                'connection_is_not_working': 'connection_is_working',
+                'interface_is_down': 'interface_is_up',
+                'wan_internet_down': 'wan_internet_up',
+                'tunnel_down': 'tunnel_up',
+                'data_collected_problem': 'data_collected_recovery',
+            }
+            opposite = recovery_pairs.get(ntype)
+            target_pk = str(target.pk) if target else None
+            if opposite and target_pk:
+                last_ok = (
+                    _N.objects.filter(
+                        target_object_id=target_pk,
+                        type=opposite,
+                        timestamp__lt=notification.timestamp,
+                    ).order_by('-timestamp').first()
+                )
+                if last_ok:
+                    delta = notification.timestamp - last_ok.timestamp
+                    total = int(delta.total_seconds())
+                    h, rem = divmod(total, 3600)
+                    m, s = divmod(rem, 60)
+                    if h:
+                        _since_str = f"{h}h {m}m"
+                    elif m:
+                        _since_str = f"{m}m {s}s"
+                    else:
+                        _since_str = f"{s}s"
+        except Exception:
+            pass
+
+    # Build the conditional rows + status text.
+    if is_threshold_metric:
+        _threshold_row = (
+            '<tr>'
+            '<td style="padding:6px 0;color:#92400e;font-weight:600;width:42%;">Threshold (target)</td>'
+            f'<td style="padding:6px 0;color:#1e293b;font-weight:700;">{_threshold_str}</td>'
+            '</tr>'
+        ) if ntype.endswith('_problem') else (
+            '<tr>'
+            '<td style="padding:6px 0;color:#15803d;font-weight:600;width:42%;">Threshold (target)</td>'
+            f'<td style="padding:6px 0;color:#1e293b;font-weight:700;">{_threshold_str}</td>'
+            '</tr>'
+        )
+        _current_row = (
+            '<tr>'
+            '<td style="padding:6px 0;color:#92400e;font-weight:600;">Current value (observed)</td>'
+            f'<td style="padding:6px 0;color:#dc2626;font-weight:700;font-size:16px;">{_current_str}</td>'
+            '</tr>'
+        ) if ntype.endswith('_problem') else (
+            '<tr>'
+            '<td style="padding:6px 0;color:#15803d;font-weight:600;">Current value (observed)</td>'
+            f'<td style="padding:6px 0;color:#16a34a;font-weight:700;font-size:16px;">{_current_str}</td>'
+            '</tr>'
+        )
+        if ntype.endswith('_problem'):
+            _status_text = (
+                f"{alert_type} exceeded threshold ({_threshold_str} &lt; {_current_str})"
+            )
+        else:
+            _status_text = (
+                f"{alert_type} ({_current_str} &le; {_threshold_str})"
+            )
+    else:
+        _threshold_row = ''
+        _current_row = ''
+        ifname = notif_data.get('ifname', '')
+        # Interface / WAN events: prefix with the interface name so the row
+        # reads e.g. "eth2 is down (since 5m 3s)".
+        iface_phrasing = {
+            'interface_is_down': ('{} is down', 'is down'),
+            'interface_is_up': ('{} is up', 'is up'),
+            'wan_internet_down': ('{} WAN internet is down', 'WAN internet down'),
+            'wan_internet_up': ('{} WAN internet is up', 'WAN internet up'),
+        }
+        if ntype in iface_phrasing and ifname:
+            phrase = iface_phrasing[ntype][0].format(ifname)
+            if is_problem:
+                _status_text = (
+                    f"{phrase} (since {_since_str})" if _since_str else phrase
+                )
+            else:
+                _status_text = (
+                    f"{phrase} (was down for {_problem_duration_str})"
+                    if _problem_duration_str else phrase
+                )
+        elif ntype == 'ping_problem':
+            _status_text = (
+                f"{device_name} facing {alert_type} for {_since_str}"
+                if _since_str else f"{device_name} facing {alert_type}"
+            )
+        elif ntype == 'ping_recovery':
+            _status_text = (
+                f"{device_name} {alert_type} after {_problem_duration_str} in problem state"
+                if _problem_duration_str else f"{device_name} {alert_type}"
+            )
+        elif is_problem:
+            _status_text = (
+                f"{alert_type} (since {_since_str})" if _since_str else alert_type
+            )
+        else:
+            _status_text = (
+                f"{alert_type} (was {_problem_duration_str})"
+                if _problem_duration_str else alert_type
+            )
+
     variables = {
         '{{ device_name }}': device_name,
         '{{ organization }}': org_name,
@@ -131,6 +314,15 @@ def _send_custom_template_email(notification, alert_config):
         '{{ retry_count }}': str(alert_config.retry_count),
         '{{ alert_after }}': str(alert_config.alert_after_minutes),
         '{{ interface_name }}': notif_data.get('ifname', ''),
+        '{{ threshold }}': _threshold_str,
+        '{{ target_value }}': _threshold_str,        # alias
+        '{{ current_value }}': _current_str,
+        '{{ observed_value }}': _current_str,        # alias
+        '{{ problem_duration }}': _problem_duration_str,
+        '{{ since_problem }}': _since_str,
+        '{{ threshold_row }}': _threshold_row,
+        '{{ current_value_row }}': _current_row,
+        '{{ status_text }}': _status_text,
     }
 
     sla_metrics = notif_data.get('sla_metrics', [])
