@@ -139,22 +139,46 @@ def _send_custom_template_email(notification, alert_config):
         except (TypeError, ValueError):
             _current_str = str(_current)
 
-    # For *_recovery, compute time spent in problem state by looking up
-    # the matching *_problem notification that preceded this one.
+    # Compute time spent in problem state for any "recovery" notification
+    # type (looking up the matching problem notification that preceded it).
+    # Recovery types include both *_recovery suffix AND named pairs like
+    # interface_is_up ↔ interface_is_down, wan_internet_up ↔ down, etc.
     _problem_duration_str = ""
-    if (notification.type or '').endswith('_recovery'):
+    _ntype_now = notification.type or ''
+    _recovery_pairs = {
+        'interface_is_up': 'interface_is_down',
+        'wan_internet_up': 'wan_internet_down',
+        'tunnel_up': 'tunnel_down',
+        'tunnel_recovery': 'tunnel_down',
+        'connection_is_working': 'connection_is_not_working',
+    }
+    if _ntype_now.endswith('_recovery'):
+        _problem_type = _ntype_now.replace('_recovery', '_problem')
+    elif _ntype_now in _recovery_pairs:
+        _problem_type = _recovery_pairs[_ntype_now]
+    else:
+        _problem_type = None
+    if _problem_type:
         try:
             from openwisp_notifications.models import Notification as _N
-            problem_type = (notification.type or '').replace('_recovery', '_problem')
             target_pk = str(target.pk) if target else None
+            ifname = (notification.data or {}).get('ifname', '') \
+                or (notification.data or {}).get('data', {}).get('ifname', '')
             if target_pk:
-                last_problem = (
-                    _N.objects.filter(
-                        target_object_id=target_pk,
-                        type=problem_type,
-                        timestamp__lt=notification.timestamp,
-                    ).order_by("-timestamp").first()
+                qs = _N.objects.filter(
+                    target_object_id=target_pk,
+                    type=_problem_type,
+                    timestamp__lt=notification.timestamp,
                 )
+                # For interface/WAN, narrow to the same ifname so a flap on
+                # eth0 doesn't pull a duration from eth1's prior down event.
+                if ifname and _ntype_now in _recovery_pairs:
+                    qs = [n for n in qs.order_by('-timestamp')[:20]
+                          if ((n.data or {}).get('ifname', '')
+                              or (n.data or {}).get('data', {}).get('ifname', '')) == ifname]
+                    last_problem = qs[0] if qs else None
+                else:
+                    last_problem = qs.order_by('-timestamp').first()
                 if last_problem:
                     delta = notification.timestamp - last_problem.timestamp
                     total = int(delta.total_seconds())
@@ -260,25 +284,20 @@ def _send_custom_template_email(notification, alert_config):
         _threshold_row = ''
         _current_row = ''
         ifname = notif_data.get('ifname', '')
-        # Interface / WAN events: prefix with the interface name so the row
-        # reads e.g. "eth2 is down (since 5m 3s)".
+        # Interface / WAN events: status reads "<device> <ifname> is down/up".
+        # Duration (since / was down for) is not shown here — that information
+        # already lives in the dedicated "Time in problem state" row of the
+        # email and would be redundant inline.
         iface_phrasing = {
-            'interface_is_down': ('{} is down', 'is down'),
-            'interface_is_up': ('{} is up', 'is up'),
-            'wan_internet_down': ('{} WAN internet is down', 'WAN internet down'),
-            'wan_internet_up': ('{} WAN internet is up', 'WAN internet up'),
+            'interface_is_down': '{dev} {iface} is down',
+            'interface_is_up': '{dev} {iface} is up',
+            'wan_internet_down': '{dev} {iface} WAN internet is down',
+            'wan_internet_up': '{dev} {iface} WAN internet is up',
         }
         if ntype in iface_phrasing and ifname:
-            phrase = iface_phrasing[ntype][0].format(ifname)
-            if is_problem:
-                _status_text = (
-                    f"{phrase} (since {_since_str})" if _since_str else phrase
-                )
-            else:
-                _status_text = (
-                    f"{phrase} (was down for {_problem_duration_str})"
-                    if _problem_duration_str else phrase
-                )
+            _status_text = iface_phrasing[ntype].format(
+                dev=device_name, iface=ifname,
+            )
         elif ntype == 'ping_problem':
             _status_text = f"{device_name} facing {alert_type}"
         elif ntype == 'ping_recovery':
