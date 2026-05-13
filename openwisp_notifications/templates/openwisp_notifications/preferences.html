@@ -24,19 +24,33 @@
     .settings-container tr.org-header .tooltip-icon { display: none !important; }
   </style>
   <script>
-    /* Replace the per-org count badges ("Web 0/42", "Email 0/42") with
-       plain "Web" / "Email" labels — counts are misleading once we hide
-       the bulk toggles, since users can no longer flip everything at once. */
+    /* Re-format the per-org count badges into "Web (10/42)" / "Email (10/42)".
+       Upstream preferences.js writes them as "Web 10/42" via
+       updateOrgLevelCheckboxes(); we wrap the numerator/denominator in
+       parens so the enabled-vs-total count is unambiguous next to the
+       column label. The MutationObserver catches both the initial render
+       and live updates on every toggle. */
     document.addEventListener('DOMContentLoaded', function(){
-      var obs = new MutationObserver(function(){
-        document.querySelectorAll('thead.toggle-header h2.web-count').forEach(function(el){
-          if (el.textContent.trim() !== 'Web') el.textContent = 'Web';
-        });
-        document.querySelectorAll('thead.toggle-header h2.email-count').forEach(function(el){
-          if (el.textContent.trim() !== 'Email') el.textContent = 'Email';
-        });
-      });
-      obs.observe(document.body, {childList: true, subtree: true});
+      function _reformat(el, label){
+        if (!el) return;
+        var t = (el.textContent || '').trim();
+        // already "Label (n/m)" → leave alone
+        if (/^\S+\s+\(\d+\/\d+\)$/.test(t)) return;
+        // "Label n/m" → "Label (n/m)"
+        var m = t.match(/^(\S+)\s+(\d+)\/(\d+)$/);
+        if (m) { el.textContent = m[1] + ' (' + m[2] + '/' + m[3] + ')'; return; }
+        // Plain "Label" without count → seed with "Label (0/0)"
+        if (t === label) el.textContent = label + ' (0/0)';
+      }
+      function _scan(){
+        document.querySelectorAll('thead.toggle-header h2.web-count')
+          .forEach(function(el){ _reformat(el, 'Web'); });
+        document.querySelectorAll('thead.toggle-header h2.email-count')
+          .forEach(function(el){ _reformat(el, 'Email'); });
+      }
+      _scan();
+      var obs = new MutationObserver(_scan);
+      obs.observe(document.body, {childList: true, subtree: true, characterData: true});
     });
   </script>
   {% if preferences_readonly %}
